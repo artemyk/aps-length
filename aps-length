@@ -29,6 +29,9 @@ import subprocess
 import re
 
 word_limit = {'PRL':    3750,
+              'PRX':    20000,
+              'RMP':    50000,
+              'RMP-COL': 20000,
               'PRA-RC': 4500,
               'PRB-RC': 3500,
               'PRC-RC': 4500,
@@ -406,6 +409,7 @@ def count_tables_words(tex_lines):
 
 
 def count_figures_words(detex_lines, tex_lines, opts):
+    import re
     if opts.var is None:
         tex_vars = {}
     else:
@@ -421,7 +425,7 @@ def count_figures_words(detex_lines, tex_lines, opts):
         m = re.findall(r"{\S*\.pdf}|.eps}|.png}$", fig_line)
         filename = m[0][1:-1]
 
-        this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in line and
+        this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in re.split('\W+',line) and
                            ('input' in line or 'includegraphics' in line)]
         (inc_fig_line_no, inc_fig_line) = this_fig_lines[0]
         fig_line_no = inc_fig_line_no
