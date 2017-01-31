@@ -428,7 +428,7 @@ def count_figures_words(detex_lines, tex_lines, opts):
         m = re.findall(r"{\S*\.pdf}|.eps}|.png}$", fig_line)
         filename = m[0][1:-1]
 
-        this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in re.split('\W+',line) and
+        this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in re.split('[{}]',line) and
                            ('input' in line or 'includegraphics' in line)]
         (inc_fig_line_no, inc_fig_line) = this_fig_lines[0]
         fig_line_no = inc_fig_line_no
