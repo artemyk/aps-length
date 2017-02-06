@@ -456,7 +456,7 @@ def count_figures_words(detex_lines, tex_lines, opts):
             identify = subprocess.Popen(['identify', filename],
                                         stdout=subprocess.PIPE)
             out, err = identify.communicate()
-            fields = out.decode('utf8').split()
+            fields = out.decode(preferred_encoding).split()
             width, height = fields[2].split('x')
             width = float(width)
             height = float(height)
@@ -466,7 +466,7 @@ def count_figures_words(detex_lines, tex_lines, opts):
                                   stdin=img_f, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = gs.communicate()
             img_f.close()
-            bbox = err.decode('utf8').split('\n')[0].split()
+            bbox = err.decode(preferred_encoding).split('\n')[0].split()
             width = float(bbox[3])
             height = float(bbox[4])
         else:
@@ -509,7 +509,7 @@ def process(tex_file, opts):
     detex = subprocess.Popen(['detex', '-e', opts.env, tex_file],
                              stdout=subprocess.PIPE)
     out, err = detex.communicate()
-    detex_lines = out.decode('utf8').strip().split('\n')
+    detex_lines = out.decode(preferred_encoding).strip().split('\n')
 
     tex_lines = io.open(tex_file).readlines()
 
@@ -572,6 +572,8 @@ parser.add_option('-j', '--journal', metavar='PRL', default='PRL',
 parser.add_option('-l', '--latex', default='pdflatex',
                   help='Latex executable. Default is "pdflatex".')
 
+import locale
+preferred_encoding = locale.getpreferredencoding()
 
 opts, args = parser.parse_args()
 
