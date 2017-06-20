@@ -536,15 +536,18 @@ def process(tex_file, opts):
     print('Tables:         %6d words' % table_words)
     print('TOTAL:          %6d words' % total_words)
     print()
-    wl = word_limit[opts.journal]
-    if total_words > wl:
-        over_under = 'OVER'
+    if opts.journal=='None':
+        print('Manuscript %s is currently %d words long'%(tex_file,total_words))
     else:
-        over_under = 'UNDER'
-    print('Manuscript %s is currently %d words (%.0f%%) %s limit of %d words for journal %s' %
-          (tex_file, abs(total_words - wl),
-           float(total_words - wl)/wl*100., over_under,
-           wl, opts.journal))
+        wl = word_limit[opts.journal]
+        if total_words > wl:
+            over_under = 'OVER'
+        else:
+            over_under = 'UNDER'
+        print('Manuscript %s is currently %d words (%.0f%%) %s limit of %d words for journal %s' %
+            (tex_file, abs(total_words - wl),
+            float(total_words - wl)/wl*100., over_under,
+            wl, opts.journal))
 
 
 parser = optparse.OptionParser(usage='%prog [options] tex-files',
