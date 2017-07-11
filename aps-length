@@ -570,8 +570,8 @@ ImageMagick to be installed. The other option is gs, which works with eps and pd
                   default='identify')
 parser.add_option('--scale-figs', type=float, default=1.1,
                   help='Scale estimate of figure word counts by factor, default 1.1 (10%)')
-parser.add_option('-j', '--journal', metavar='PRL', default='PRL',
-                  help='Journal abbreviation (e.g. PRL, PRB-RC)')
+parser.add_option('-j', '--journal', metavar='PRL', default='None',
+                  help='Journal abbreviation (e.g. None, PRL, PRB-RC)')
 parser.add_option('-l', '--latex', default='pdflatex',
                   help='Latex executable. Default is "pdflatex".')
 
