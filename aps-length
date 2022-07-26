@@ -288,6 +288,10 @@ def count_main_text_words_wordcount(tex_lines, opts):
     # Using the 'nofootinbib' option
     mod_tex_lines = [ line.replace(r'\documentclass[', r'\documentclass[nofootbib, ')
                                     for line in mod_tex_lines ]
+
+    # Commenting out the \bibliographystyle command
+    mod_tex_lines = [ line.replace(r'\bibliographystyle', r'%\bibliographystyle') for line in mod_tex_lines ]
+
     # Putting an \end{document} before the bibliography
     bib_index = [ i for (i, line) in enumerate(mod_tex_lines) if r'\bibliography{' in line]
     if bib_index:
@@ -328,11 +332,21 @@ def count_main_text_words_wordcount(tex_lines, opts):
     wordcount_tex_file.write(wordcount_tex_contents)
     wordcount_tex_file.close()
 
-    os.system('%s tmp_tex_file > /dev/null 2>&1' % opts.latex)
-    os.system('bibtex tmp_tex_file > /dev/null 2>&1')
-    os.system('%s tmp_tex_file > /dev/null 2>&1' % opts.latex)
-    os.system('%s tmp_tex_file > /dev/null 2>&1' % opts.latex)
-    os.system(r'echo tmp_tex_file.tex | %s wordcount.tex > /dev/null 2>&1' % opts.latex)
+    cmds_args = (opts.latex, opts.latexopts)
+    cmds = ['%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
+            'bibtex tmp_tex_file > /dev/null 2>&1',
+            '%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
+            '%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
+            r'echo tmp_tex_file.tex | %s %s wordcount.tex > /dev/null 2>&1' % cmds_args
+    ]
+    for cmd in cmds:
+        v=os.system(cmd)
+        if v != 0:
+            print("*** WARNING ****")
+            print("Error encountered when running '%s'" % cmd)
+            print("*** WARNING ****")
+            print()
+
     # this does not have a defined encoding in latex, so just read it as bytes
     wordcount_log = io.open('wordcount.log','rb').readlines()
 
@@ -462,6 +476,8 @@ def count_figures_words(detex_lines, tex_lines, opts):
             height = float(height)
         elif opts.figs == 'gs':
             img_f = io.open(filename, 'r')
+            print('here')
+            asdf
             gs = subprocess.Popen(['gs', '-q', '-dSAFER', '-dBATCH', '-sDEVICE=bbox', '-'],
                                   stdin=img_f, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = gs.communicate()
@@ -524,6 +540,7 @@ def process(tex_file, opts):
         main_text_words = count_main_text_words_wordcount(tex_lines, opts)
     else:
         raise ValueError('Unsupported method %s' % opts.method)
+
     eqn_words = count_equations_words(tex_lines)
     fig_words = count_figures_words(detex_lines, tex_lines, opts)
     table_words = count_tables_words(tex_lines)
@@ -574,6 +591,8 @@ parser.add_option('-j', '--journal', metavar='PRL', default='None',
                   help='Journal abbreviation (e.g. None, PRL, PRB-RC)')
 parser.add_option('-l', '--latex', default='pdflatex',
                   help='Latex executable. Default is "pdflatex".')
+parser.add_option('-o', '--latexopts', default='-halt-on-error',
+                  help='Options to latex executable. Default is "-interaction=nonstopmode".')
 
 import locale
 preferred_encoding = locale.getpreferredencoding()
