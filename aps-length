@@ -533,27 +533,24 @@ def process(tex_file, opts):
 
     tex_lines = []
     in_equation = False
-    re1 = re.compile(r"\b\$\$\b")
+    re1 = re.compile(r"(?<!\\)\$\$")
     for l in io.open(tex_file).readlines():
-        print(l)
         if '%' in l:
             # Remove comments
             l = re.sub(r"(?<!\\)%.*", " ", l)
         # Replace equations
         if re.search(re1, l):
             if in_equation:
-                l = re.sub(re1, r"\end{equation}", l)
+                l = re.sub(re1, r"\\end{equation}", l)
                 in_equation = False
             else:
-                l = re.sub(re1, r"\begin{equation}", l)
+                l = re.sub(re1, r"\\begin{equation}", l)
                 in_equation = True
         if r'\[' in l:
-            l = re.sub(r"\b\\\[\b", r"\\begin{equation}", l)
+            l = re.sub(r'(?<!\\)\\\[', r"\\begin{equation}", l)
         if r'\]' in l:
-            l = re.sub(r"\b\\\]\b", r"\\end{equation}", l)
+            l = re.sub(r"(?<!\\)\\\]", r"\\end{equation}", l)
         tex_lines.append(l)
-        print(l)
-        print()
 
 
     abstract_chars = count_chars_abstract(tex_lines)
