@@ -342,10 +342,14 @@ def count_main_text_words_wordcount(tex_lines, opts):
     for cmd in cmds:
         v=os.system(cmd)
         if v != 0:
-            print("*** WARNING ****")
-            print("Error encountered when running '%s'" % cmd)
-            print("*** WARNING ****")
-            print()
+            print("*** Error encountered when running '%s' ***" % cmd)
+
+            if not opts.ignoreerrors:
+                raise Exception('LaTeX error encountered')
+            else:
+                print('Trying to continue')
+                print()
+
 
     # this does not have a defined encoding in latex, so just read it as bytes
     wordcount_log = io.open('wordcount.log','rb').readlines()
@@ -593,6 +597,8 @@ parser.add_option('-l', '--latex', default='pdflatex',
                   help='Latex executable. Default is "pdflatex".')
 parser.add_option('-o', '--latexopts', default='-halt-on-error',
                   help='Options to latex executable. Default is "-interaction=nonstopmode".')
+parser.add_option('-i', '--ignoreerrors', default=False,
+                  help='Try to continue even if LaTeX encounters errors')
 
 import locale
 preferred_encoding = locale.getpreferredencoding()
