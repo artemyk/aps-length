@@ -310,7 +310,7 @@ def count_main_text_words_wordcount(tex_lines, opts):
     while mod_tex_lines:
         line = mod_tex_lines.pop(0)
         for env in filterenvs:
-            if r'\begin{%s' % env in line:
+            if r'\begin{%s}' % env in line:
                 while mod_tex_lines and not r'\end{%s}' % env in line:
                     line = '% ' + line
                     filtered_lines.append(line)
@@ -346,6 +346,7 @@ def count_main_text_words_wordcount(tex_lines, opts):
             print("Error encountered when running '%s'" % cmd)
             print("*** WARNING ****")
             print()
+            asdfasdf
 
     # this does not have a defined encoding in latex, so just read it as bytes
     wordcount_log = io.open('wordcount.log','rb').readlines()
@@ -358,10 +359,10 @@ def count_main_text_words_wordcount(tex_lines, opts):
     return wordcount
 
 def find_equation_lines(tex_lines):
-    return [i for (i, line) in enumerate(tex_lines) if (r'\begin{equation' in line or
-                                                        r'\begin{eqnarray' in line or
-                                                        r'\begin{align' in line or
-                                                        r'\begin{displaymath' in line)]
+    return [i for (i, line) in enumerate(tex_lines) if (r'\begin{equation}' in line or
+                                                        r'\begin{eqnarray}' in line or
+                                                        r'\begin{align}' in line or
+                                                        r'\begin{displaymath}' in line)]
 def count_equation_words(lines, start_line):
     count = 1
     array = False
@@ -373,10 +374,10 @@ def count_equation_words(lines, start_line):
         eqn_words_per_line = 16
 
     for line in lines[start_line+1:]:
-        if (r'\end{equation' in line or
-            r'\end{eqnarray' in line or
-            r'\end{align' in line or
-            r'\end{displaymath' in line):
+        if (r'\end{equation}' in line or
+            r'\end{eqnarray}' in line or
+            r'\end{align}' in line or
+            r'\end{displaymath}' in line):
             break
         if r'\\' in line:
             if not array:
@@ -527,7 +528,30 @@ def process(tex_file, opts):
     out, err = detex.communicate()
     detex_lines = out.decode(preferred_encoding).strip().split('\n')
 
-    tex_lines = io.open(tex_file).readlines()
+    tex_lines = []
+    in_equation = False
+    re1 = re.compile(r"\b\$\$\b")
+    for l in io.open(tex_file).readlines():
+        print(l)
+        if '%' in l:
+            # Remove comments
+            l = re.sub(r"(?<!\\)%.*", " ", l)
+        # Replace equations
+        if re.search(re1, l):
+            if in_equation:
+                l = re.sub(re1, r"\end{equation}", l)
+                in_equation = False
+            else:
+                l = re.sub(re1, r"\begin{equation}", l)
+                in_equation = True
+        if r'\[' in l:
+            l = re.sub(r"\b\\\[\b", r"\\begin{equation}", l)
+        if r'\]' in l:
+            l = re.sub(r"\b\\\]\b", r"\\end{equation}", l)
+        tex_lines.append(l)
+        print(l)
+        print()
+
 
     abstract_chars = count_chars_abstract(tex_lines)
     print()
