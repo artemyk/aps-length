@@ -537,7 +537,7 @@ def process(tex_file, opts):
     for l in io.open(tex_file).readlines():
         if '%' in l:
             # Remove comments
-            l = re.sub(r"(?<!\\)%.*", " ", l)
+            l = re.sub(r"(?<!\\)%.*", "% ", l)
         # Replace equations
         if re.search(re1, l):
             if in_equation:
