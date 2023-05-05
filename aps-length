@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 Count length of an APS manuscript formatted in LaTeX, following
@@ -538,6 +538,20 @@ def process(tex_file, opts):
         if '%' in l:
             # Remove comments
             l = re.sub(r"(?<!\\)%.*", "% ", l)
+
+        # Strip out txfonts insertion, it seems to cause errors
+        if r'\usepackage' in l and 'txfonts' in l:
+            l = re.sub(r"\\usepackage(\[[^\]]*\])?{txfonts}", "", l)
+            if 'usepackage' in l and 'txtfonts' in l:
+                print("*** WARNING ***: couldn't clip out txfonts usepackage reference. Make sure its on its own line")
+            if l.strip() == "":
+                continue
+
+        if l.strip() == '\\appendix':
+            print("*** Ending text, appendix encountered ***")
+            tex_lines.append('\\end{document}\n')
+            break
+
         # Replace equations
         if re.search(re1, l):
             if in_equation:
@@ -601,6 +615,8 @@ parser.add_option('-v', '--var', metavar='key value', nargs=2, action='append',
 parser.add_option('-e', '--env', metavar='env1,env2,...',
                 help='Comma-separated list of LaTeX environments to ignore.',
                 default='abstract,acknowledgments,acknowledgements,displaymath,equation,eqnarray,thebibliography')
+parser.add_option('-x', '--appendix', default=False,
+                help='Include text after \\appendix environment.')
 parser.add_option('-m', '--method', metavar='(detex | wordcount)', default='wordcount',
                   help='''Tool to use to count words in main text. Default is wordcount.
 detex is also supported (but tends to underestimate word count).''')
