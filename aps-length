@@ -310,14 +310,24 @@ def count_main_text_words_wordcount(tex_lines, opts):
     while mod_tex_lines:
         line = mod_tex_lines.pop(0)
         for env in filterenvs:
-            if r'\begin{%s}' % env in line:
-                while mod_tex_lines and not r'\end{%s}' % env in line:
-                    line = '% ' + line
-                    filtered_lines.append(line)
+            start_str = r'\begin{%s}' % env
+            end_str   = r'\end{%s}'   % env
+            if start_str in line:
+                ix      = line.index(start_str)
+                filtered_lines.append(line[:ix] + '% ' + line[ix:])
+                while mod_tex_lines:
+                    line    = mod_tex_lines.pop(0)
+                    if end_str in line:
+                        break
+                    filtered_lines.append('% ' + line)
+                ix = line.index(end_str) + len(end_str)
+                filtered_lines.append('% ' + line[:ix] + "\n")  # comment out the \end too
+                if len(line) > ix:
+                    filtered_lines.append(line[ix:])
+
+                if mod_tex_lines:
                     line = mod_tex_lines.pop(0)
-                line = '% ' + line
-                filtered_lines.append(line)
-                line = mod_tex_lines.pop(0) # comment out the \end too
+
         filtered_lines.append(line)
 
     mod_tex_lines = filtered_lines
@@ -354,9 +364,10 @@ def count_main_text_words_wordcount(tex_lines, opts):
     # this does not have a defined encoding in latex, so just read it as bytes
     wordcount_log = io.open('wordcount.log','rb').readlines()
 
-    rm_files = glob.glob('wordcount*') + glob.glob('tmp_tex_file*')
-    for file in rm_files:
-        os.unlink(file)
+    if not opts.keep_tmp_files:
+        rm_files = glob.glob('wordcount*') + glob.glob('tmp_tex_file*')
+        for file in rm_files:
+            os.unlink(file)
 
     wordcount = len([line for line in wordcount_log if b'3.08633' in line or b'3.08635' in line])
     return wordcount
@@ -635,6 +646,8 @@ parser.add_option('-o', '--latexopts', default='-halt-on-error',
                   help='Options to latex executable. Default is "-interaction=nonstopmode".')
 parser.add_option('-i', '--ignoreerrors', default=False,
                   help='Try to continue even if LaTeX encounters errors')
+parser.add_option('--keep_tmp_files', action='store_true',
+                  help='Do not delete temporary latex files after running (useful for debugging)')
 
 import locale
 preferred_encoding = locale.getpreferredencoding()
