@@ -249,7 +249,7 @@ def count_main_text_words_detex(detex_lines, tex_lines):
     detex_lines = [line for line in detex_lines if len(line.strip()) > 0]
     detex_lines = [line for line in detex_lines if '<Picture' not in line]
 
-    title_line_no, = [i for i, line in enumerate(tex_lines) if '\maketitle' in line]
+    title_line_no, = [i for i, line in enumerate(tex_lines) if r'\maketitle' in line]
     first_line_no = title_line_no + 1
     while not is_first_line(tex_lines[first_line_no]):
         first_line_no += 1
@@ -558,7 +558,7 @@ def process(tex_file, opts):
             if l.strip() == "":
                 continue
 
-        if l.strip() == '\\appendix':
+        if l.strip() == r'\appendix':
             print("*** Ending text, appendix encountered ***")
             tex_lines.append('\\end{document}\n')
             break
