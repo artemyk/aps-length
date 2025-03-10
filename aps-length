@@ -454,7 +454,7 @@ def count_figures_words(detex_lines, tex_lines, opts):
 
     for fig_i, fig_line in enumerate(fig_lines):
         # filename = fig_line.strip()[1:-1].split()[1]
-        m = re.search(r"\\includegraphics\[.*\]\s*{(\S*)}", fig_line)
+        m = re.search(r"\\includegraphics\[.*\]\s*{([^}\s]*)}", fig_line)
         filename = m.group(1)
 
         this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in re.split('[{}]',line) and
@@ -482,8 +482,13 @@ def count_figures_words(detex_lines, tex_lines, opts):
         filename = filename+ext
 
         if opts.figs == 'identify':
-            identify = subprocess.Popen(['identify', filename],
-                                        stdout=subprocess.PIPE)
+            try:
+                identify = subprocess.Popen(['identify', filename],
+                                            stdout=subprocess.PIPE)
+            except FileNotFoundError:
+                raise Exception("Could not find command 'identify'. Please make sure ImageMagick is installed.")
+                
+
             out, err = identify.communicate()
             fields = out.decode(preferred_encoding).split()
             width, height = fields[2].split('x')
@@ -657,7 +662,11 @@ opts, args = parser.parse_args()
 orig_eps_pdf_files = glob.glob('*-eps-converted-to.pdf')
 
 for tex_file in args:
+    if os.path.dirname(tex_file) != "":
+        raise Exception('Trying to run on %s, but script only works for files in current directory'%tex_file)
+
     process(tex_file, opts)
+
 
 for eps_pdf_file in glob.glob('*-eps-converted-to.pdf'):
     if eps_pdf_file not in orig_eps_pdf_files:
