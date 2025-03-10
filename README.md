@@ -2,7 +2,9 @@ aps-length
 ==========
 
 (c) James Kermode <james.kermode@gmail.com> 2014
+
 (c) Artemy Kolchinsky <artemyk@gmail.com> 2025
+
 
 Usage: aps-length [options] tex-files
 
@@ -13,7 +15,7 @@ Requires _detex_ (http://www.ctan.org/pkg/detex) and either
 _ghostscript_ (http://www.ghostscript.com/) or ImageMagick _identify_
 (http://www.imagemagick.org) to be available on your path.
 
-Use --figs=gs if you have .eps or .pdf figures, and --figs=identify if you have
+Use `--figs=gs` if you have .eps or .pdf figures, and `--figs=identify` if you have
 .png figures.
 
 ```
