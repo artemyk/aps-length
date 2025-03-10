@@ -2,6 +2,7 @@ aps-length
 ==========
 
 (c) James Kermode <james.kermode@gmail.com> 2014
+(c) Artemy Kolchinsky <artemyk@gmail.com> 2025
 
 Usage: aps-length [options] tex-files
 
@@ -15,26 +16,38 @@ _ghostscript_ (http://www.ghostscript.com/) or ImageMagick _identify_
 Use --figs=gs if you have .eps or .pdf figures, and --figs=identify if you have
 .png figures.
 
-    Options:
-      -h, --help            show this help message and exit
-      -v key value, --var=key value
-                            Define TeX variables e.g. to specify location of
-                            figure files.
-      -e env1,env2,..., --env=env1,env2,...
-                            Comma-separated list of LaTeX environments to ignore.
-      -m (detex | wordcount), --method=(detex | wordcount)
-                            Tool to use to count words in main text. Default is
-                            wordcount, detex is also supported
-                            (but tends to underestimate word count).
-      -f (identify | gs), --figs=(identify | gs)
-                            Tool to use to extract bounding box from figure.
-                            Default is gs, ImageMagick identify also supported.
-			    gs works with eps and pdf images, while
-			    identify is a better choice for png images.
-      --scale-figs=SCALE_FIGS
-                            Scale estimate of figure word counts by factor,
-                            default 1.1 (10%)
-      -j PRL, --journal=PRL
-                            Journal abbreviation (e.g. PRL, PRB-RC)
-      -l LATEX, --latex=LATEX
-                            Latex executable. Default is "pdflatex".
+```
+Options:
+  -h, --help            show this help message and exit
+  -v key value, --var=key value
+                        Define TeX variables e.g. to specify location of
+                        figure files.
+  -e env1,env2,..., --env=env1,env2,...
+                        Comma-separated list of LaTeX environments to ignore.
+  -x APPENDIX, --appendix=APPENDIX
+                        Include text after \appendix environment.
+  -m (detex | wordcount), --method=(detex | wordcount)
+                        Tool to use to count words in main text. Default is
+                        wordcount. detex is also supported (but tends to
+                        underestimate word count).
+  -f (identify | gs), --figs=(identify | gs)
+                        Tool to use to extract bounding box from figure. The
+                        default is identify, which works for png, pdf, eps,
+                        and most image formats, but requires ImageMagick to be
+                        installed. The other option is gs, which works with
+                        eps and pdf mages.
+  --scale-figs=SCALE_FIGS
+                        Scale estimate of figure word counts by factor,
+                        default 1.1 (10%)
+  -j PRL, --journal=PRL
+                        Journal abbreviation (e.g. None, PRL, PRB-RC)
+  -l LATEX, --latex=LATEX
+                        Latex executable. Default is "pdflatex".
+  -o LATEXOPTS, --latexopts=LATEXOPTS
+                        Options to latex executable. Default is
+                        "-interaction=nonstopmode".
+  -i IGNOREERRORS, --ignoreerrors=IGNOREERRORS
+                        Try to continue even if LaTeX encounters errors
+  --keep_tmp_files      Do not delete temporary latex files after running
+                        (useful for debugging)
+```

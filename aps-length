@@ -496,8 +496,6 @@ def count_figures_words(detex_lines, tex_lines, opts):
             height = float(height)
         elif opts.figs == 'gs':
             img_f = io.open(filename, 'r')
-            print('here')
-            asdf
             gs = subprocess.Popen(['gs', '-q', '-dSAFER', '-dBATCH', '-sDEVICE=bbox', '-'],
                                   stdin=img_f, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = gs.communicate()
