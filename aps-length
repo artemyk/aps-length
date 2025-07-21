@@ -561,8 +561,8 @@ def process(tex_file, opts):
             if l.strip() == "":
                 continue
 
-        if l.strip() == r'\appendix':
-            print("*** Ending text, appendix encountered ***")
+        if l.strip() == r'\appendix' or r'\bibliography ' in l or r'\bibliography{' in l:
+            print("*** Ending text, appendix or bibliography encountered *** (line: '%s')" % l.strip())
             tex_lines.append('\\end{document}\n')
             break
 
@@ -629,8 +629,6 @@ parser.add_option('-v', '--var', metavar='key value', nargs=2, action='append',
 parser.add_option('-e', '--env', metavar='env1,env2,...',
                 help='Comma-separated list of LaTeX environments to ignore.',
                 default='abstract,acknowledgments,acknowledgements,displaymath,equation,eqnarray,thebibliography')
-parser.add_option('-x', '--appendix', default=False,
-                help='Include text after \\appendix environment.')
 parser.add_option('-m', '--method', metavar='(detex | wordcount)', default='wordcount',
                   help='''Tool to use to count words in main text. Default is wordcount.
 detex is also supported (but tends to underestimate word count).''')
