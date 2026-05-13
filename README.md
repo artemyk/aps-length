@@ -26,8 +26,11 @@ Options:
                         figure files.
   -e env1,env2,..., --env=env1,env2,...
                         Comma-separated list of LaTeX environments to ignore.
-  -x APPENDIX, --appendix=APPENDIX
+  -x, --appendix
                         Include text after \appendix environment.
+  --stop-comment=TEXT   Stop counting when a LaTeX comment contains TEXT. Use
+                        an empty string to disable. Default is "!STOP-APS-
+                        LENGTH!".
   -m (detex | wordcount), --method=(detex | wordcount)
                         Tool to use to count words in main text. Default is
                         wordcount. detex is also supported (but tends to
@@ -47,8 +50,8 @@ Options:
                         Latex executable. Default is "pdflatex".
   -o LATEXOPTS, --latexopts=LATEXOPTS
                         Options to latex executable. Default is
-                        "-interaction=nonstopmode".
-  -i IGNOREERRORS, --ignoreerrors=IGNOREERRORS
+                        "-halt-on-error".
+  -i, --ignoreerrors
                         Try to continue even if LaTeX encounters errors
   --keep_tmp_files      Do not delete temporary latex files after running
                         (useful for debugging)

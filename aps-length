@@ -23,28 +23,33 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 from __future__ import print_function, unicode_literals
 import glob
+import io
+import locale
 import optparse
 import os
-import sys
-import subprocess
 import re
-import io
+import shlex
+import subprocess
+import tempfile
 
-word_limit = {'PRL':    3750,
-              'PRX':    20000,
-              'RMP':    50000,
-              'RMP-COL': 20000,
-              'PRA-RC': 4500,
-              'PRB-RC': 3500,
-              'PRC-RC': 4500,
-              'PRD-RC': 4500,
-              'PRE-RC': 4500,
-              'PRApplied': 3500,
-              'PRST-PER':  3500}
+PREFERRED_ENCODING = locale.getpreferredencoding()
+DEFAULT_STOP_COMMENT = '!STOP-APS-LENGTH!'
+
+WORD_LIMITS = {'PRL':    3750,
+               'PRX':    20000,
+               'RMP':    50000,
+               'RMP-COL': 20000,
+               'PRA-RC': 4500,
+               'PRB-RC': 3500,
+               'PRC-RC': 4500,
+               'PRD-RC': 4500,
+               'PRE-RC': 4500,
+               'PRApplied': 3500,
+               'PRST-PER':  3500}
 # word limits from: https://journals.aps.org/authors/length-guide
 # updated 2017-10-03
 
-wordcount_tex_contents = r"""\ProvidesFile{wordcount.tex}[2000/09/27 v1.5 Michael Downes]
+WORDCOUNT_TEX_CONTENTS = r"""\ProvidesFile{wordcount.tex}[2000/09/27 v1.5 Michael Downes]
 % Copyright 2000 Michael John Downes
 % This file has no restrictions on its use, distribution, or sale.
 %
@@ -237,6 +242,289 @@ or equivalent when processing is finished.^^J%
 \@tempa
 """
 
+DISPLAY_MATH_ENVS = ('equation', 'eqnarray', 'align', 'displaymath')
+WORDCOUNT_FILTER_ENVS = DISPLAY_MATH_ENVS + (
+    'acknowledgments', 'acknowledgements', 'abstract', 'thebibliography')
+COMMENT_RE = re.compile(r"(?<!\\)%")
+INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{(?P<filename>[^{}]+)\}",
+    re.S)
+
+
+def _env_begin_re(envs):
+    env_pattern = '|'.join(re.escape(env) for env in envs)
+    return re.compile(r'\\begin\{(?P<env>%s)(?P<star>\*)?\}' % env_pattern)
+
+
+def _env_end_re(env_name):
+    return re.compile(r'\\end\{%s\}' % re.escape(env_name))
+
+
+DISPLAY_MATH_BEGIN_RE = _env_begin_re(DISPLAY_MATH_ENVS)
+
+
+def _display_math_begin(line):
+    match = DISPLAY_MATH_BEGIN_RE.search(line)
+    if match is None:
+        return None
+    return match.group('env') + (match.group('star') or ''), match
+
+
+def _comment_out_environment_blocks(lines, envs):
+    begin_re = _env_begin_re(envs)
+    filtered_lines = []
+    active_env = None
+    active_end_re = None
+
+    for line in lines:
+        rest = line
+        while rest:
+            if active_env is None:
+                begin_match = begin_re.search(rest)
+                if begin_match is None:
+                    filtered_lines.append(rest)
+                    break
+
+                before = rest[:begin_match.start()]
+                if before:
+                    filtered_lines.append(before if before.endswith('\n') else before + '\n')
+
+                active_env = begin_match.group('env') + (
+                    begin_match.group('star') or '')
+                active_end_re = _env_end_re(active_env)
+                rest = rest[begin_match.start():]
+            else:
+                end_match = active_end_re.search(rest)
+                if end_match is None:
+                    filtered_lines.append('% ' + rest)
+                    break
+
+                commented = rest[:end_match.end()]
+                if not commented.endswith('\n'):
+                    commented += '\n'
+                filtered_lines.append('% ' + commented)
+                rest = rest[end_match.end():]
+                active_env = None
+                active_end_re = None
+
+    return filtered_lines
+
+
+def _add_documentclass_option(lines, option):
+    documentclass_re = re.compile(r'(\\documentclass)(\s*)(?:\[([^\]]*)\])?')
+    updated_lines = []
+
+    for line in lines:
+        if r'\documentclass' not in line:
+            updated_lines.append(line)
+            continue
+
+        def add_option(match):
+            opts = match.group(3)
+            if opts is None:
+                return '%s%s[%s]' % (match.group(1), match.group(2), option)
+
+            existing_opts = [opt.strip() for opt in opts.split(',')]
+            if option in existing_opts:
+                return match.group(0)
+            return '%s%s[%s, %s]' % (match.group(1), match.group(2), option, opts)
+
+        updated_lines.append(documentclass_re.sub(add_option, line, count=1))
+
+    return updated_lines
+
+
+def _make_temp_tex_file(prefix, contents):
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix='.tex', dir='.')
+    os.close(fd)
+    path = os.path.basename(path)
+    with io.open(path, 'w') as tex_file:
+        if isinstance(contents, str):
+            tex_file.write(contents)
+        else:
+            tex_file.writelines(contents)
+    return path, os.path.splitext(path)[0]
+
+
+def _cleanup_temp_outputs(*bases):
+    for base in bases:
+        for filename in glob.glob(base + '.*'):
+            os.unlink(filename)
+
+
+def _format_cmd(cmd):
+    return ' '.join(shlex.quote(str(part)) for part in cmd)
+
+
+def _split_latex_comment(line):
+    match = COMMENT_RE.search(line)
+    if match is None:
+        return line, None
+    return line[:match.start()], line[match.end():]
+
+
+def _strip_latex_comment(line):
+    uncommented, comment = _split_latex_comment(line)
+    if comment is None:
+        return line
+    return uncommented + '% '
+
+
+def _has_stop_comment(line, stop_comment):
+    if not stop_comment:
+        return False
+    _, comment = _split_latex_comment(line)
+    return comment is not None and stop_comment in comment
+
+
+def _decode_command_output(output):
+    return output.decode(PREFERRED_ENCODING, errors='replace')
+
+
+def _run_capture(cmd, stdin=None):
+    try:
+        return subprocess.run(cmd, stdin=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise RuntimeError("Could not find command '%s'" % cmd[0])
+
+
+def _tail_text(text, max_lines=20):
+    lines = text.strip().splitlines()
+    if len(lines) <= max_lines:
+        return '\n'.join(lines)
+    return '\n'.join(lines[-max_lines:])
+
+
+def _read_log_tail(base, max_lines=20):
+    log_path = base + '.log'
+    if not os.path.exists(log_path):
+        return ''
+    with io.open(log_path, errors='replace') as log_file:
+        return _tail_text(log_file.read(), max_lines=max_lines)
+
+
+def _run_quiet(cmd, input_text=None):
+    try:
+        return subprocess.run(cmd, input=input_text, text=input_text is not None,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise RuntimeError("Could not find command '%s'" % cmd[0])
+
+
+def _print_command_failure(cmd, completed, log_base=None):
+    print("*** Error encountered when running '%s' ***" % _format_cmd(cmd))
+
+    stdout = _tail_text(_decode_command_output(completed.stdout))
+    stderr = _tail_text(_decode_command_output(completed.stderr))
+    log_tail = _read_log_tail(log_base) if log_base else ''
+
+    if stderr:
+        print('--- stderr ---')
+        print(stderr)
+    if stdout:
+        print('--- stdout ---')
+        print(stdout)
+    if log_tail:
+        print('--- %s.log tail ---' % log_base)
+        print(log_tail)
+
+
+def _find_matching_line(lines, needle, description):
+    matches = [i for i, line in enumerate(lines) if needle in line]
+    if not matches:
+        raise ValueError('Could not find %s' % description)
+    return matches[0]
+
+
+def _find_environment_bounds(lines, env):
+    begin_line = _find_matching_line(lines, r'\begin{%s}' % env,
+                                     r'\begin{%s}' % env)
+    for i, line in enumerate(lines[begin_line + 1:], begin_line + 1):
+        if r'\end{%s}' % env in line:
+            return begin_line, i
+    raise ValueError(r'Could not find \end{%s}' % env)
+
+
+def _parse_identify_dimensions(filename):
+    identify = _run_capture(['identify', filename])
+    if identify.returncode != 0:
+        raise RuntimeError("identify failed for %s: %s" %
+                           (filename, _decode_command_output(identify.stderr).strip()))
+
+    output = _decode_command_output(identify.stdout)
+    fields = output.split()
+    dimensions = re.match(r'(?P<width>\d+(?:\.\d+)?)x(?P<height>\d+(?:\.\d+)?)',
+                          fields[2] if len(fields) >= 3 else '')
+    if dimensions is None:
+        raise RuntimeError("Could not parse identify output for %s: %s" %
+                           (filename, output.strip()))
+
+    return float(dimensions.group('width')), float(dimensions.group('height'))
+
+
+def _parse_gs_dimensions(filename):
+    with io.open(filename, 'rb') as img_f:
+        gs = _run_capture(['gs', '-q', '-dSAFER', '-dBATCH', '-sDEVICE=bbox', '-'],
+                          stdin=img_f)
+    if gs.returncode != 0:
+        raise RuntimeError("gs failed for %s: %s" %
+                           (filename, _decode_command_output(gs.stderr).strip()))
+
+    bbox = _decode_command_output(gs.stderr).split('\n')[0].split()
+    if len(bbox) < 5:
+        raise RuntimeError("Could not parse gs bbox output for %s: %s" %
+                           (filename, _decode_command_output(gs.stderr).strip()))
+
+    return float(bbox[3]), float(bbox[4])
+
+
+def _includegraphics_commands(tex_lines):
+    commands = []
+
+    for line_no, line in enumerate(tex_lines):
+        start = 0
+        while True:
+            command_start = line.find(r'\includegraphics', start)
+            if command_start == -1:
+                break
+
+            command_text = line[command_start:]
+            end_line_no = line_no
+            match = INCLUDEGRAPHICS_RE.search(command_text)
+            while match is None and end_line_no + 1 < len(tex_lines):
+                end_line_no += 1
+                command_text += tex_lines[end_line_no]
+                match = INCLUDEGRAPHICS_RE.search(command_text)
+
+            if match is None:
+                raise ValueError('Could not parse includegraphics command: %s' %
+                                 command_text.strip())
+
+            filename = ' '.join(match.group('filename').split())
+            commands.append((line_no, command_text, filename))
+            start = command_start + len(r'\includegraphics')
+
+    return commands
+
+
+def _resolve_figure_filename(filename):
+    candidates = []
+    for ext in ['', '.pdf', '.eps', '.png']:
+        candidate = filename + ext
+        if os.path.exists(candidate):
+            candidates.append(candidate)
+
+    if not candidates:
+        raise IOError('missing picture file %s' % filename)
+
+    if len(candidates) > 1:
+        print("*** WARNING ***: multiple picture files match %s; using %s" %
+              (filename, candidates[0]))
+
+    return candidates[0]
+
+
 def is_first_line(line):
     if line.strip() == '':
         return False
@@ -244,35 +532,40 @@ def is_first_line(line):
         return False
     return True
 
+
 def count_main_text_words_detex(detex_lines, tex_lines):
     # remove images and empty lines
     detex_lines = [line for line in detex_lines if len(line.strip()) > 0]
     detex_lines = [line for line in detex_lines if '<Picture' not in line]
 
-    title_line_no, = [i for i, line in enumerate(tex_lines) if r'\maketitle' in line]
+    title_line_no = _find_matching_line(tex_lines, r'\maketitle', r'\maketitle')
     first_line_no = title_line_no + 1
+    if first_line_no >= len(tex_lines):
+        raise ValueError(r'Could not find main text after \maketitle')
     while not is_first_line(tex_lines[first_line_no]):
         first_line_no += 1
+        if first_line_no >= len(tex_lines):
+            raise ValueError(r'Could not find main text after \maketitle')
     first_line = tex_lines[first_line_no]
 
-    detex_first_line_no = 0
-    for line in detex_lines:
+    detex_first_line_no = None
+    for i, line in enumerate(detex_lines):
         if line.strip() in first_line.strip():
+            detex_first_line_no = i
             break
-        detex_first_line_no += 1
+    if detex_first_line_no is None:
+        raise ValueError('Could not locate first main-text line in detex output')
 
     main_text = detex_lines[detex_first_line_no:]
 
-    main_text = [line.replace('-', ' ') for line in main_text ] # hyphenated words count as two words
+    # Hyphenated compounds count as multiple words under the APS guide.
+    main_text = [line.replace('-', ' ') for line in main_text]
     lines_words = [line.split() for line in main_text]
-    words = [word for words in lines_words for word in words ]
-
-    #words_file = open('words', 'w')
-    #words_file.writelines([word+'\n' for word in words])
-    #words_file.close()
+    words = [word for words in lines_words for word in words]
 
     main_text_words = len(words)
     return main_text_words
+
 
 def count_main_text_words_wordcount(tex_lines, opts):
     """
@@ -283,115 +576,103 @@ def count_main_text_words_wordcount(tex_lines, opts):
     mod_tex_lines = tex_lines[:]
 
     # Commenting out the \maketitle command
-    mod_tex_lines = [ line.replace(r'\maketitle', r'%\maketitle') for line in mod_tex_lines ]
+    mod_tex_lines = [line.replace(r'\maketitle', r'%\maketitle')
+                     for line in mod_tex_lines]
 
     # Using the 'nofootinbib' option
-    mod_tex_lines = [ line.replace(r'\documentclass[', r'\documentclass[nofootbib, ')
-                                    for line in mod_tex_lines ]
+    mod_tex_lines = _add_documentclass_option(mod_tex_lines, 'nofootinbib')
 
     # Commenting out the \bibliographystyle command
-    mod_tex_lines = [ line.replace(r'\bibliographystyle', r'%\bibliographystyle') for line in mod_tex_lines ]
+    mod_tex_lines = [line.replace(r'\bibliographystyle', r'%\bibliographystyle')
+                     for line in mod_tex_lines]
 
     # Putting an \end{document} before the bibliography
-    bib_index = [ i for (i, line) in enumerate(mod_tex_lines) if r'\bibliography{' in line]
+    bib_index = [i for (i, line) in enumerate(mod_tex_lines)
+                 if r'\bibliography{' in line]
     if bib_index:
         mod_tex_lines.insert(bib_index[0], r'\end{document}' + '\n')
 
-    # Putting an \end{document} before the acknowledgments/acknowledgements in environment \acknowledgments{...}
-    ack_index = [ i for (i, line) in enumerate(mod_tex_lines) if r'\acknowle' in line]
+    # Putting an \end{document} before acknowledgments/acknowledgements.
+    ack_index = [i for (i, line) in enumerate(mod_tex_lines)
+                 if r'\acknowle' in line]
     if ack_index:
         mod_tex_lines.insert(ack_index[0], r'\end{document}' + '\n')
 
-
     # Comment out any display equations and acknowledgments
-    filterenvs = ['equation', 'eqnarray', 'align', 'displaymath', 'acknowledgments',
-                  'acknowledgements', 'abstract', 'thebibliography']
-    filtered_lines = []
-    while mod_tex_lines:
-        line = mod_tex_lines.pop(0)
-        for env in filterenvs:
-            start_str = r'\begin{%s}' % env
-            end_str   = r'\end{%s}'   % env
-            if start_str in line:
-                ix      = line.index(start_str)
-                filtered_lines.append(line[:ix] + '% ' + line[ix:])
-                while mod_tex_lines:
-                    line    = mod_tex_lines.pop(0)
-                    if end_str in line:
-                        break
-                    filtered_lines.append('% ' + line)
-                ix = line.index(end_str) + len(end_str)
-                filtered_lines.append('% ' + line[:ix] + "\n")  # comment out the \end too
-                if len(line) > ix:
-                    filtered_lines.append(line[ix:])
-
-                if mod_tex_lines:
-                    line = mod_tex_lines.pop(0)
-
-        filtered_lines.append(line)
-
-    mod_tex_lines = filtered_lines
+    mod_tex_lines = _comment_out_environment_blocks(mod_tex_lines, WORDCOUNT_FILTER_ENVS)
 
     # FIXME - Commenting out the rows (but not the caption) of any tables
 
-    tmp_tex_file = io.open('tmp_tex_file.tex', 'w')
-    tmp_tex_file.writelines(line for line in mod_tex_lines)
-    tmp_tex_file.close()
+    tmp_tex_path, tmp_tex_base = _make_temp_tex_file('aps_length_tmp_', mod_tex_lines)
+    _, wordcount_tex_base = _make_temp_tex_file(
+        'aps_length_wordcount_', WORDCOUNT_TEX_CONTENTS)
 
-    wordcount_tex_file = io.open('wordcount.tex', 'w')
-    wordcount_tex_file.write(wordcount_tex_contents)
-    wordcount_tex_file.close()
+    try:
+        latex_cmd = shlex.split(opts.latex) + shlex.split(opts.latexopts)
+        cmds = [(latex_cmd + [tmp_tex_base], None, tmp_tex_base),
+                (['bibtex', tmp_tex_base], None, None),
+                (latex_cmd + [tmp_tex_base], None, tmp_tex_base),
+                (latex_cmd + [tmp_tex_base], None, tmp_tex_base),
+                (latex_cmd + [wordcount_tex_base], tmp_tex_path + '\n',
+                 wordcount_tex_base)]
+        for cmd, input_text, log_base in cmds:
+            completed = _run_quiet(cmd, input_text=input_text)
 
-    cmds_args = (opts.latex, opts.latexopts)
-    cmds = ['%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
-            'bibtex tmp_tex_file > /dev/null 2>&1',
-            '%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
-            '%s %s tmp_tex_file > /dev/null 2>&1' % cmds_args,
-            r'echo tmp_tex_file.tex | %s %s wordcount.tex > /dev/null 2>&1' % cmds_args
-    ]
-    for cmd in cmds:
-        v=os.system(cmd)
-        if v != 0:
-            print("*** Error encountered when running '%s' ***" % cmd)
+            if completed.returncode != 0:
+                _print_command_failure(cmd, completed, log_base=log_base)
 
-            if not opts.ignoreerrors:
-                raise Exception('LaTeX error encountered')
-            else:
-                print('Trying to continue')
-                print()
+                if not opts.ignoreerrors:
+                    raise RuntimeError('LaTeX error encountered')
+                else:
+                    print('Trying to continue')
+                    print()
 
+        # this does not have a defined encoding in latex, so just read it as bytes
+        with io.open(wordcount_tex_base + '.log', 'rb') as wordcount_log_file:
+            wordcount_log = wordcount_log_file.readlines()
 
-    # this does not have a defined encoding in latex, so just read it as bytes
-    wordcount_log = io.open('wordcount.log','rb').readlines()
+        wordcount = len([line for line in wordcount_log
+                         if b'3.08633' in line or b'3.08635' in line])
+        return wordcount
+    finally:
+        if not opts.keep_tmp_files:
+            _cleanup_temp_outputs(tmp_tex_base, wordcount_tex_base)
 
-    if not opts.keep_tmp_files:
-        rm_files = glob.glob('wordcount*') + glob.glob('tmp_tex_file*')
-        for file in rm_files:
-            os.unlink(file)
-
-    wordcount = len([line for line in wordcount_log if b'3.08633' in line or b'3.08635' in line])
-    return wordcount
 
 def find_equation_lines(tex_lines):
-    return [i for (i, line) in enumerate(tex_lines) if (r'\begin{equation}' in line or
-                                                        r'\begin{eqnarray}' in line or
-                                                        r'\begin{align}' in line or
-                                                        r'\begin{displaymath}' in line)]
+    return [i for (i, line) in enumerate(tex_lines) if _display_math_begin(line)]
+
+
+def is_in_widetext(lines, line_no):
+    in_widetext = False
+    for line in lines[:line_no+1]:
+        if r'\begin{widetext}' in line:
+            in_widetext = True
+        if r'\end{widetext}' in line:
+            in_widetext = False
+    return in_widetext
+
+
 def count_equation_words(lines, start_line):
     count = 1
     array = False
     array_lines = 0
-    two_column = '*' in lines[start_line]
+    two_column = is_in_widetext(lines, start_line)
     if two_column:
         eqn_words_per_line = 32
     else:
         eqn_words_per_line = 16
 
+    begin_info = _display_math_begin(lines[start_line])
+    if begin_info is None:
+        return 0
+    env_name, begin_match = begin_info
+    env_end_re = _env_end_re(env_name)
+    if env_end_re.search(lines[start_line], begin_match.end()):
+        return count*eqn_words_per_line
+
     for line in lines[start_line+1:]:
-        if (r'\end{equation}' in line or
-            r'\end{eqnarray}' in line or
-            r'\end{align}' in line or
-            r'\end{displaymath}' in line):
+        if env_end_re.search(line):
             break
         if r'\\' in line:
             if not array:
@@ -409,14 +690,18 @@ def count_equation_words(lines, start_line):
 
     return count*eqn_words_per_line
 
+
 def count_equations_words(tex_lines):
     eqn_line_nos = find_equation_lines(tex_lines)
-    eqn_words = [count_equation_words(tex_lines, eqn_line_no) for eqn_line_no in eqn_line_nos]
+    eqn_words = [count_equation_words(tex_lines, eqn_line_no)
+                 for eqn_line_no in eqn_line_nos]
     print('Equations: %r' % eqn_words)
     return sum(eqn_words)
 
+
 def find_table_lines(tex_lines):
     return [i for (i, line) in enumerate(tex_lines) if r'\begin{tabl' in line]
+
 
 def count_table_words(tex_lines, table_line):
     two_column = 'table*' in tex_lines[table_line]
@@ -433,85 +718,46 @@ def count_table_words(tex_lines, table_line):
         print('Single-column table with %d lines' % count)
         return int(6.5*count + 13.)
 
+
 def count_tables_words(tex_lines):
     table_lines = find_table_lines(tex_lines)
-    table_words = [ count_table_words(tex_lines, table_line) for table_line in table_lines ]
+    table_words = [count_table_words(tex_lines, table_line)
+                   for table_line in table_lines]
     print('Tables: %r' % table_words)
     return sum(table_words)
 
 
-def count_figures_words(detex_lines, tex_lines, opts):
-    import re
+def count_figures_words(tex_lines, opts):
     if opts.var is None:
         tex_vars = {}
     else:
         tex_vars = dict(opts.var)
 
-    # fig_lines = [line for line in detex_lines if '<Picture' in line ]
-    fig_lines = [line for line in tex_lines if 'includegraphics' in line ]
+    fig_commands = _includegraphics_commands(tex_lines)
     fig_words = []
-    #figs = {}
 
-    for fig_i, fig_line in enumerate(fig_lines):
-        # filename = fig_line.strip()[1:-1].split()[1]
-        m = re.search(r"\\includegraphics\[.*\]\s*{([^}\s]*)}", fig_line)
-        filename = m.group(1)
-
-        this_fig_lines = [ (i, line) for i, line in enumerate(tex_lines) if filename in re.split('[{}]',line) and
-                           ('input' in line or 'includegraphics' in line)]
-        (inc_fig_line_no, inc_fig_line) = this_fig_lines[0]
+    for fig_i, (inc_fig_line_no, _, filename) in enumerate(fig_commands):
         fig_line_no = inc_fig_line_no
-        while r'\begin{figure' not in tex_lines[fig_line_no]:
+        while fig_line_no >= 0 and r'\begin{figure' not in tex_lines[fig_line_no]:
             fig_line_no -= 1
+        if fig_line_no < 0:
+            raise ValueError('Could not find figure environment for %s' % filename)
         two_column = 'figure*' in tex_lines[fig_line_no]
-
-        subfig = 'subfloat' in tex_lines[inc_fig_line_no]
-        newline = r'\\' in tex_lines[inc_fig_line_no]
-
-        #print(filename, tex_lines[inc_fig_line_no], tex_lines[fig_line_no])
 
         for key in tex_vars.keys():
             if key in filename:
                 filename = filename.replace(key, tex_vars[key])
 
-        for ext in ['', '.pdf', '.eps', '.png']:
-            if len(glob.glob(filename+ext)) == 1:
-                break
-        else:
-            raise IOError('missing picture file %s' % filename)
-        filename = filename+ext
+        filename = _resolve_figure_filename(filename)
 
         if opts.figs == 'identify':
-            try:
-                identify = subprocess.Popen(['identify', filename],
-                                            stdout=subprocess.PIPE)
-            except FileNotFoundError:
-                raise Exception("Could not find command 'identify'. Please make sure ImageMagick is installed.")
-                
-
-            out, err = identify.communicate()
-            fields = out.decode(preferred_encoding).split()
-            width, height = fields[2].split('x')
-            width = float(width)
-            height = float(height)
+            width, height = _parse_identify_dimensions(filename)
         elif opts.figs == 'gs':
-            img_f = io.open(filename, 'r')
-            gs = subprocess.Popen(['gs', '-q', '-dSAFER', '-dBATCH', '-sDEVICE=bbox', '-'],
-                                  stdin=img_f, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out, err = gs.communicate()
-            img_f.close()
-            bbox = err.decode(preferred_encoding).split('\n')[0].split()
-            width = float(bbox[3])
-            height = float(bbox[4])
+            width, height = _parse_gs_dimensions(filename)
         else:
             raise ValueError('Unknown figure method "%s"' % opts.figs)
 
-        #if fig_line_no not in figs:
-        #    figs[fig_line_no] = (fig_i, two_column, [(width, height, newline, filename)])
-        #else:
-        #    figs[fig_line_no][2].append((width, height, newline, filename))
-
-        aspect = float(width/height)
+        aspect = float(width / height)
 
         if two_column:
             words_equiv = 300./(0.5*aspect) + 40.
@@ -523,57 +769,83 @@ def count_figures_words(detex_lines, tex_lines, opts):
                                                                       aspect, filename))
         fig_words.append(words_equiv)
 
-    return int(sum(fig_words)*opts.scale_figs)
+    return int(sum(fig_words) * opts.scale_figs)
 
 
 def count_chars_abstract(tex_lines):
-    abs_begin_line, = [i for (i,line) in enumerate(tex_lines) if r'\begin{abstract}' in line]
-    abs_end_line, = [i for (i,line) in enumerate(tex_lines) if r'\end{abstract}' in line]
+    abs_begin_line, abs_end_line = _find_environment_bounds(tex_lines, 'abstract')
 
     abstract_lines = tex_lines[abs_begin_line+1:abs_end_line]
-    abstract_lines = [line for line in abstract_lines if not line.startswith('%') ]
+    abstract_lines = [line for line in abstract_lines if not line.startswith('%')]
     abstract = ''.join(abstract_lines)
     print('ABSTRACT:')
     print(abstract)
     return len(abstract)
 
 
+def detex_lines_for_tex_lines(tex_lines, opts):
+    detex_tex_path, detex_tex_base = _make_temp_tex_file('aps_length_detex_', tex_lines)
+    try:
+        detex = _run_capture(['detex', '-e', opts.env, detex_tex_path])
+        if detex.returncode != 0:
+            raise RuntimeError("detex failed for %s: %s" %
+                               (detex_tex_path,
+                                _decode_command_output(detex.stderr).strip()))
+        return _decode_command_output(detex.stdout).strip().split('\n')
+    finally:
+        if not opts.keep_tmp_files:
+            _cleanup_temp_outputs(detex_tex_base)
+
+
+def replace_display_dollars(line, in_equation):
+    dollar_re = re.compile(r"(?<!\\)\$\$")
+
+    def replace(match):
+        nonlocal in_equation
+        if in_equation:
+            in_equation = False
+            return r"\end{equation}"
+        in_equation = True
+        return r"\begin{equation}"
+
+    return dollar_re.sub(replace, line), in_equation
+
+
 def process(tex_file, opts):
     print('Processing TeX file: %s\n' % tex_file)
-    detex = subprocess.Popen(['detex', '-e', opts.env, tex_file],
-                             stdout=subprocess.PIPE)
-    out, err = detex.communicate()
-    detex_lines = out.decode(preferred_encoding).strip().split('\n')
 
     tex_lines = []
     in_equation = False
-    re1 = re.compile(r"(?<!\\)\$\$")
-    for l in io.open(tex_file).readlines():
+    with io.open(tex_file) as tex_input:
+        input_lines = tex_input.readlines()
+
+    for l in input_lines:
+        if _has_stop_comment(l, opts.stop_comment):
+            print("*** Ending text, stop comment %r encountered ***" %
+                  opts.stop_comment)
+            tex_lines.append('\\end{document}\n')
+            break
+
         if '%' in l:
             # Remove comments
-            l = re.sub(r"(?<!\\)%.*", "% ", l)
+            l = _strip_latex_comment(l)
 
         # Strip out txfonts insertion, it seems to cause errors
         if r'\usepackage' in l and 'txfonts' in l:
             l = re.sub(r"\\usepackage(\[[^\]]*\])?{txfonts}", "", l)
             if 'usepackage' in l and 'txtfonts' in l:
-                print("*** WARNING ***: couldn't clip out txfonts usepackage reference. Make sure its on its own line")
+                print("*** WARNING ***: couldn't clip out txfonts usepackage "
+                      "reference. Make sure its on its own line")
             if l.strip() == "":
                 continue
 
-        if l.strip() == r'\appendix':
+        if l.strip() == r'\appendix' and not opts.appendix:
             print("*** Ending text, appendix encountered ***")
             tex_lines.append('\\end{document}\n')
             break
 
         # Replace equations
-        if re.search(re1, l):
-            if in_equation:
-                l = re.sub(re1, r"\\end{equation}", l)
-                in_equation = False
-            else:
-                l = re.sub(re1, r"\\begin{equation}", l)
-                in_equation = True
+        l, in_equation = replace_display_dollars(l, in_equation)
         if r'\[' in l:
             l = re.sub(r'(?<!\\)\\\[', r"\\begin{equation}", l)
         if r'\]' in l:
@@ -587,6 +859,7 @@ def process(tex_file, opts):
     print()
 
     if opts.method == 'detex':
+        detex_lines = detex_lines_for_tex_lines(tex_lines, opts)
         main_text_words = count_main_text_words_detex(detex_lines, tex_lines)
     elif opts.method == 'wordcount':
         main_text_words = count_main_text_words_wordcount(tex_lines, opts)
@@ -594,7 +867,7 @@ def process(tex_file, opts):
         raise ValueError('Unsupported method %s' % opts.method)
 
     eqn_words = count_equations_words(tex_lines)
-    fig_words = count_figures_words(detex_lines, tex_lines, opts)
+    fig_words = count_figures_words(tex_lines, opts)
     table_words = count_tables_words(tex_lines)
     total_words = (main_text_words + eqn_words + fig_words + table_words)
 
@@ -605,67 +878,96 @@ def process(tex_file, opts):
     print('Tables:         %6d words' % table_words)
     print('TOTAL:          %6d words' % total_words)
     print()
-    if opts.journal=='None':
-        print('Manuscript %s is currently %d words long'%(tex_file,total_words))
+    if opts.journal == 'None':
+        print('Manuscript %s is currently %d words long' % (tex_file, total_words))
     else:
-        wl = word_limit[opts.journal]
+        wl = WORD_LIMITS[opts.journal]
         if total_words > wl:
             over_under = 'OVER'
         else:
             over_under = 'UNDER'
-        print('Manuscript %s is currently %d words (%.0f%%) %s limit of %d words for journal %s' %
-            (tex_file, abs(total_words - wl),
-            float(total_words - wl)/wl*100., over_under,
-            wl, opts.journal))
+        percent_from_limit = abs(float(total_words - wl) / wl * 100.)
+        print('Manuscript %s is currently %d words (%.0f%%) %s limit of %d '
+              'words for journal %s' %
+              (tex_file, total_words, percent_from_limit, over_under, wl, opts.journal))
 
 
-parser = optparse.OptionParser(usage='%prog [options] tex-files',
-                               description="""
+def build_parser():
+    parser = optparse.OptionParser(
+        usage='%prog [options] tex-files',
+        description="""
 Count length of an APS manuscript formatted in LaTeX, following
 guidelines described at http://journals.aps.org/authors/length-guide""")
 
-parser.add_option('-v', '--var', metavar='key value', nargs=2, action='append',
-                help='Define TeX variables e.g. to specify location of figure files.')
-parser.add_option('-e', '--env', metavar='env1,env2,...',
-                help='Comma-separated list of LaTeX environments to ignore.',
-                default='abstract,acknowledgments,acknowledgements,displaymath,equation,eqnarray,thebibliography')
-parser.add_option('-x', '--appendix', default=False,
-                help='Include text after \\appendix environment.')
-parser.add_option('-m', '--method', metavar='(detex | wordcount)', default='wordcount',
-                  help='''Tool to use to count words in main text. Default is wordcount.
+    parser.add_option('-v', '--var', metavar='key value', nargs=2, action='append',
+                      help='Define TeX variables e.g. to specify location of figure files.')
+    parser.add_option('-e', '--env', metavar='env1,env2,...',
+                      help='Comma-separated list of LaTeX environments to ignore.',
+                      default=('abstract,acknowledgments,acknowledgements,'
+                               'displaymath,equation,eqnarray,thebibliography'))
+    parser.add_option('-x', '--appendix', action='store_true', default=False,
+                      help='Include text after \\appendix environment.')
+    parser.add_option('--stop-comment', metavar='TEXT',
+                      default=DEFAULT_STOP_COMMENT,
+                      help=('Stop counting when a LaTeX comment contains TEXT. '
+                            'Use an empty string to disable. Default is "%default".'))
+    parser.add_option('-m', '--method', metavar='(detex | wordcount)', default='wordcount',
+                      help='''Tool to use to count words in main text. Default is wordcount.
 detex is also supported (but tends to underestimate word count).''')
-parser.add_option('-f', '--figs', metavar='(identify | gs)',
-                  help='''Tool to use to extract bounding box from figure.
+    parser.add_option('-f', '--figs', metavar='(identify | gs)',
+                      help='''Tool to use to extract bounding box from figure.
 The default is identify, which works for png, pdf, eps, and most image formats, but requires
 ImageMagick to be installed. The other option is gs, which works with eps and pdf mages.''',
-                  default='identify')
-parser.add_option('--scale-figs', type=float, default=1.1,
-                  help='Scale estimate of figure word counts by factor, default 1.1 (10%)')
-parser.add_option('-j', '--journal', metavar='PRL', default='None',
-                  help='Journal abbreviation (e.g. None, PRL, PRB-RC)')
-parser.add_option('-l', '--latex', default='pdflatex',
-                  help='Latex executable. Default is "pdflatex".')
-parser.add_option('-o', '--latexopts', default='-halt-on-error',
-                  help='Options to latex executable. Default is "-interaction=nonstopmode".')
-parser.add_option('-i', '--ignoreerrors', default=False,
-                  help='Try to continue even if LaTeX encounters errors')
-parser.add_option('--keep_tmp_files', action='store_true',
-                  help='Do not delete temporary latex files after running (useful for debugging)')
-
-import locale
-preferred_encoding = locale.getpreferredencoding()
-
-opts, args = parser.parse_args()
-
-orig_eps_pdf_files = glob.glob('*-eps-converted-to.pdf')
-
-for tex_file in args:
-    if os.path.dirname(tex_file) != "":
-        raise Exception('Trying to run on %s, but script only works for files in current directory'%tex_file)
-
-    process(tex_file, opts)
+                      default='identify')
+    parser.add_option('--scale-figs', type=float, default=1.1,
+                      help='Scale estimate of figure word counts by factor, default 1.1 (10%)')
+    parser.add_option('-j', '--journal', metavar='PRL', default='None',
+                      help='Journal abbreviation (e.g. None, PRL, PRB-RC)')
+    parser.add_option('-l', '--latex', default='pdflatex',
+                      help='Latex executable. Default is "pdflatex".')
+    parser.add_option('-o', '--latexopts', default='-halt-on-error',
+                      help='Options to latex executable. Default is "-halt-on-error".')
+    parser.add_option('-i', '--ignoreerrors', action='store_true', default=False,
+                      help='Try to continue even if LaTeX encounters errors')
+    parser.add_option('--keep_tmp_files', action='store_true',
+                      help=('Do not delete temporary latex files after running '
+                            '(useful for debugging)'))
+    return parser
 
 
-for eps_pdf_file in glob.glob('*-eps-converted-to.pdf'):
-    if eps_pdf_file not in orig_eps_pdf_files:
-        os.remove(delname)
+def validate_options(parser, opts):
+    if opts.journal != 'None' and opts.journal not in WORD_LIMITS:
+        parser.error('unknown journal %r; choose one of: None, %s' %
+                     (opts.journal, ', '.join(sorted(WORD_LIMITS))))
+
+    if opts.method not in ('detex', 'wordcount'):
+        parser.error("unknown method %r; choose 'detex' or 'wordcount'" %
+                     opts.method)
+
+    if opts.figs not in ('identify', 'gs'):
+        parser.error("unknown figure method %r; choose 'identify' or 'gs'" %
+                     opts.figs)
+
+
+def main(argv=None):
+    parser = build_parser()
+    opts, args = parser.parse_args(argv)
+    validate_options(parser, opts)
+
+    orig_eps_pdf_files = glob.glob('*-eps-converted-to.pdf')
+
+    for tex_file in args:
+        if os.path.dirname(tex_file) != "":
+            raise ValueError(
+                'Trying to run on %s, but script only works for files in current directory' %
+                tex_file)
+
+        process(tex_file, opts)
+
+    for eps_pdf_file in glob.glob('*-eps-converted-to.pdf'):
+        if eps_pdf_file not in orig_eps_pdf_files:
+            os.remove(eps_pdf_file)
+
+
+if __name__ == '__main__':
+    main()
