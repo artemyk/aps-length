@@ -22,6 +22,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 """
 
 from __future__ import print_function, unicode_literals
+import bisect
 import glob
 import io
 import locale
@@ -247,8 +248,11 @@ WORDCOUNT_FILTER_ENVS = DISPLAY_MATH_ENVS + (
     'acknowledgments', 'acknowledgements', 'abstract', 'thebibliography')
 COMMENT_RE = re.compile(r"(?<!\\)%")
 INCLUDEGRAPHICS_RE = re.compile(
-    r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{(?P<filename>[^{}]+)\}",
+    r"\\includegraphics\*?\s*(?:\[[^\]]*\]\s*)*\{(?P<filename>[^{}]+)\}",
     re.S)
+TIKZ_FIGURE_RE = re.compile(r"\\begin\s*\{tikzpicture\}|\\tikz\b")
+INPUT_RE = re.compile(r"\\(?:input|include)\s*\{(?P<filename>[^{}]+)\}")
+PYMUPDF_MISSING_WARNED = False
 
 
 def _env_begin_re(envs):
@@ -367,7 +371,15 @@ def _strip_latex_comment(line):
     uncommented, comment = _split_latex_comment(line)
     if comment is None:
         return line
-    return uncommented + '% '
+
+    newline = ''
+    if comment.endswith('\r\n'):
+        newline = '\r\n'
+    elif comment.endswith('\n'):
+        newline = '\n'
+    elif comment.endswith('\r'):
+        newline = '\r'
+    return uncommented + '% ' + newline
 
 
 def _has_stop_comment(line, stop_comment):
@@ -479,33 +491,215 @@ def _parse_gs_dimensions(filename):
     return float(bbox[3]), float(bbox[4])
 
 
+def _parse_pdf_dimensions(filename):
+    try:
+        import fitz
+    except ImportError:
+        _warn_pymupdf_missing()
+        return _parse_gs_dimensions(filename)
+
+    try:
+        pdf_file = fitz.open(filename)
+    except Exception as err:
+        raise RuntimeError('PyMuPDF failed to open %s: %s' % (filename, err))
+
+    try:
+        if len(pdf_file) == 0:
+            raise RuntimeError('PDF figure has no pages: %s' % filename)
+
+        first_page = pdf_file[0]
+        return float(first_page.rect.width), float(first_page.rect.height)
+    finally:
+        pdf_file.close()
+
+
+def _warn_pymupdf_missing():
+    global PYMUPDF_MISSING_WARNED
+
+    if PYMUPDF_MISSING_WARNED:
+        return
+
+    print()
+    print('*' * 72)
+    print('*** WARNING: PyMuPDF is not installed ***')
+    print('PDF figure dimensions are falling back to Ghostscript.')
+    print('Install PyMuPDF with "python3 -m pip install PyMuPDF" for the')
+    print('more accurate PDF figure sizing used by upstream aps-length.')
+    print('*' * 72)
+    print()
+    PYMUPDF_MISSING_WARNED = True
+
+
+def _parse_figure_dimensions(filename, opts):
+    if os.path.splitext(filename)[1].lower() == '.pdf':
+        return _parse_pdf_dimensions(filename)
+    if opts.figs == 'identify':
+        return _parse_identify_dimensions(filename)
+    if opts.figs == 'gs':
+        return _parse_gs_dimensions(filename)
+    raise ValueError('Unknown figure method "%s"' % opts.figs)
+
+
+def _line_offsets(lines):
+    offsets = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+    return offsets
+
+
+def _line_number_for_offset(offsets, offset):
+    return bisect.bisect_right(offsets, offset) - 1
+
+
 def _includegraphics_commands(tex_lines):
     commands = []
+    source = ''.join(tex_lines)
+    offsets = _line_offsets(tex_lines)
 
-    for line_no, line in enumerate(tex_lines):
-        start = 0
-        while True:
-            command_start = line.find(r'\includegraphics', start)
-            if command_start == -1:
-                break
+    for match in INCLUDEGRAPHICS_RE.finditer(source):
+        filename = ' '.join(match.group('filename').split())
+        commands.append({
+            'start_line': _line_number_for_offset(offsets, match.start()),
+            'end_line': _line_number_for_offset(offsets, match.end()),
+            'start_pos': match.start(),
+            'end_pos': match.end(),
+            'source': match.group(0),
+            'filename': filename,
+        })
 
-            command_text = line[command_start:]
-            end_line_no = line_no
-            match = INCLUDEGRAPHICS_RE.search(command_text)
-            while match is None and end_line_no + 1 < len(tex_lines):
-                end_line_no += 1
-                command_text += tex_lines[end_line_no]
-                match = INCLUDEGRAPHICS_RE.search(command_text)
-
-            if match is None:
-                raise ValueError('Could not parse includegraphics command: %s' %
-                                 command_text.strip())
-
-            filename = ' '.join(match.group('filename').split())
-            commands.append((line_no, command_text, filename))
-            start = command_start + len(r'\includegraphics')
+    unmatched_source = INCLUDEGRAPHICS_RE.sub('', source)
+    if r'\includegraphics' in unmatched_source:
+        command_start = unmatched_source.find(r'\includegraphics')
+        raise ValueError('Could not parse includegraphics command near: %s' %
+                         unmatched_source[command_start:command_start + 120].strip())
 
     return commands
+
+
+def _figure_environments(tex_lines):
+    figures = []
+
+    for start_line, line in enumerate(tex_lines):
+        if r'\begin{figure' not in line:
+            continue
+
+        for end_line in range(start_line, len(tex_lines)):
+            if r'\end{figure' in tex_lines[end_line]:
+                figures.append({
+                    'start_line': start_line,
+                    'end_line': end_line,
+                    'two_column': 'figure*' in line,
+                })
+                break
+        else:
+            raise ValueError('Could not find figure environment end after line %d' %
+                             (start_line + 1))
+
+    return figures
+
+
+def _resolve_tex_input(filename, base_dir='.'):
+    filename = ' '.join(filename.split())
+    candidates = [os.path.join(base_dir, filename)]
+    if not os.path.splitext(filename)[1]:
+        candidates.append(os.path.join(base_dir, filename + '.tex'))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _find_tikz_in_input_file(filename, base_dir='.', seen=None):
+    if seen is None:
+        seen = set()
+
+    path = _resolve_tex_input(filename, base_dir=base_dir)
+    if path is None:
+        return None
+
+    abs_path = os.path.abspath(path)
+    if abs_path in seen:
+        return None
+    seen.add(abs_path)
+
+    with io.open(path, errors='replace') as tex_input:
+        for line in tex_input:
+            uncommented, _ = _split_latex_comment(line)
+            if TIKZ_FIGURE_RE.search(uncommented):
+                return path
+
+            nested_base_dir = os.path.dirname(path) or '.'
+            for match in INPUT_RE.finditer(uncommented):
+                nested_path = _find_tikz_in_input_file(
+                    match.group('filename'), base_dir=nested_base_dir, seen=seen)
+                if nested_path is not None:
+                    return nested_path
+
+    return None
+
+
+def _find_tikz_line(tex_lines, figure):
+    for line_no in range(figure['start_line'], figure['end_line'] + 1):
+        uncommented, _ = _split_latex_comment(tex_lines[line_no])
+        if TIKZ_FIGURE_RE.search(uncommented):
+            return line_no, None
+
+        for match in INPUT_RE.finditer(uncommented):
+            input_path = _find_tikz_in_input_file(match.group('filename'))
+            if input_path is not None:
+                return line_no, input_path
+    return None
+
+
+def _tikz_figure_error(tikz_ref):
+    line_no, input_path = tikz_ref
+    message = (
+        'TikZ figure encountered near line %d. aps-length cannot '
+        'estimate inline TikZ reliably; build it to a PDF and include '
+        r'it with \includegraphics.' % (line_no + 1))
+    if input_path is not None:
+        message += ' TikZ was found in %s.' % input_path
+    return ValueError(message)
+
+
+def _check_no_tikz_figures(tex_lines):
+    for figure in _figure_environments(tex_lines):
+        tikz_ref = _find_tikz_line(tex_lines, figure)
+        if tikz_ref is not None:
+            raise _tikz_figure_error(tikz_ref)
+
+
+def _command_line_breaks_between(source, left_command, right_command):
+    between = source[left_command['end_pos']:right_command['start_pos']]
+    return (r'\\' in between or r'\newline' in between or r'\par' in between
+            or re.search(r'\n\s*\n', between) is not None)
+
+
+def _combined_figure_dimensions(source, commands, dimensions):
+    rows = []
+    row = []
+
+    for i, (command, dimension) in enumerate(zip(commands, dimensions)):
+        if i > 0 and _command_line_breaks_between(source, commands[i - 1], command):
+            rows.append(row)
+            row = []
+        row.append(dimension)
+
+    if row:
+        rows.append(row)
+
+    row_sizes = []
+    for row in rows:
+        row_width = sum(width for width, height in row)
+        row_height = max(height for width, height in row)
+        row_sizes.append((row_width, row_height))
+
+    width = max(row_width for row_width, row_height in row_sizes)
+    height = sum(row_height for row_width, row_height in row_sizes)
+    return width, height
 
 
 def _resolve_figure_filename(filename):
@@ -733,40 +927,56 @@ def count_figures_words(tex_lines, opts):
     else:
         tex_vars = dict(opts.var)
 
+    source = ''.join(tex_lines)
     fig_commands = _includegraphics_commands(tex_lines)
+    figure_envs = _figure_environments(tex_lines)
     fig_words = []
 
-    for fig_i, (inc_fig_line_no, _, filename) in enumerate(fig_commands):
-        fig_line_no = inc_fig_line_no
-        while fig_line_no >= 0 and r'\begin{figure' not in tex_lines[fig_line_no]:
-            fig_line_no -= 1
-        if fig_line_no < 0:
-            raise ValueError('Could not find figure environment for %s' % filename)
-        two_column = 'figure*' in tex_lines[fig_line_no]
+    for command in fig_commands:
+        if not any(figure['start_line'] <= command['start_line'] <= figure['end_line']
+                   for figure in figure_envs):
+            print("*** WARNING ***: ignoring includegraphics outside figure "
+                  "environment: %s" % command['filename'])
 
-        for key in tex_vars.keys():
-            if key in filename:
-                filename = filename.replace(key, tex_vars[key])
+    for fig_i, figure in enumerate(figure_envs):
+        tikz_ref = _find_tikz_line(tex_lines, figure)
+        if tikz_ref is not None:
+            raise _tikz_figure_error(tikz_ref)
 
-        filename = _resolve_figure_filename(filename)
+        figure_commands = [
+            command for command in fig_commands
+            if figure['start_line'] <= command['start_line'] <= figure['end_line']]
+        if not figure_commands:
+            continue
 
-        if opts.figs == 'identify':
-            width, height = _parse_identify_dimensions(filename)
-        elif opts.figs == 'gs':
-            width, height = _parse_gs_dimensions(filename)
-        else:
-            raise ValueError('Unknown figure method "%s"' % opts.figs)
+        filenames = []
+        dimensions = []
+        for command in figure_commands:
+            filename = command['filename']
 
+            for key in tex_vars.keys():
+                if key in filename:
+                    filename = filename.replace(key, tex_vars[key])
+
+            filename = _resolve_figure_filename(filename)
+            filenames.append(filename)
+            dimensions.append(_parse_figure_dimensions(filename, opts))
+
+        width, height = _combined_figure_dimensions(
+            source, figure_commands, dimensions)
         aspect = float(width / height)
 
-        if two_column:
+        if figure['two_column']:
             words_equiv = 300./(0.5*aspect) + 40.
         else:
             words_equiv = 150./aspect + 20.
 
-        print('Figure %d:   %6d words (%.0fx%.0f aspect %.2f, %s)' % (fig_i+1, int(words_equiv),
-                                                                      width, height,
-                                                                      aspect, filename))
+        filename_label = ', '.join(filenames)
+        if len(filenames) > 1:
+            filename_label = '%d panels: %s' % (len(filenames), filename_label)
+
+        print('Figure %d:   %6d words (%.0fx%.0f aspect %.2f, %s)' %
+              (fig_i + 1, int(words_equiv), width, height, aspect, filename_label))
         fig_words.append(words_equiv)
 
     return int(sum(fig_words) * opts.scale_figs)
@@ -859,6 +1069,7 @@ def process(tex_file, opts):
             l = re.sub(r"(?<!\\)\\\]", r"\\end{equation}", l)
         tex_lines.append(l)
 
+    _check_no_tikz_figures(tex_lines)
 
     abstract_chars = count_chars_abstract(tex_lines)
     print()
@@ -923,8 +1134,9 @@ guidelines described at http://journals.aps.org/authors/length-guide""")
 detex is also supported (but tends to underestimate word count).''')
     parser.add_option('-f', '--figs', metavar='(identify | gs)',
                       help='''Tool to use to extract bounding box from figure.
-The default is identify, which works for png, pdf, eps, and most image formats, but requires
-ImageMagick to be installed. The other option is gs, which works with eps and pdf mages.''',
+The default is identify, which works for png, eps, and most image formats, but requires
+ImageMagick to be installed. The other option is gs, which works with eps images.
+PDF figures use PyMuPDF automatically when available, otherwise gs.''',
                       default='identify')
     parser.add_option('--scale-figs', type=float, default=1.1,
                       help='Scale estimate of figure word counts by factor, default 1.1 (10%)')

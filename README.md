@@ -14,9 +14,15 @@ LaTeX, following guidelines described at http://journals.aps.org/authors/length-
 Requires _detex_ (http://www.ctan.org/pkg/detex) and either
 _ghostscript_ (http://www.ghostscript.com/) or ImageMagick _identify_
 (http://www.imagemagick.org) to be available on your path.
+PyMuPDF (`python3 -m pip install PyMuPDF`) is used automatically for PDF
+figures when available because it gives more reliable PDF dimensions than
+Ghostscript or ImageMagick. Without PyMuPDF, PDF figures fall back to
+Ghostscript.
 
-Use `--figs=gs` if you have .eps or .pdf figures, and `--figs=identify` if you have
-.png figures.
+Use `--figs=gs` if you have .eps figures, and `--figs=identify` if you have
+.png figures. PDF figures are measured with PyMuPDF regardless of this option.
+Inline TikZ figures are not estimated; build them to PDF and include the PDF
+with `\includegraphics`.
 
 ```
 Options:
@@ -37,10 +43,11 @@ Options:
                         underestimate word count).
   -f (identify | gs), --figs=(identify | gs)
                         Tool to use to extract bounding box from figure. The
-                        default is identify, which works for png, pdf, eps,
+                        default is identify, which works for png, eps,
                         and most image formats, but requires ImageMagick to be
                         installed. The other option is gs, which works with
-                        eps and pdf mages.
+                        eps images. PDF figures use PyMuPDF automatically when
+                        available, otherwise gs.
   --scale-figs=SCALE_FIGS
                         Scale estimate of figure word counts by factor,
                         default 1.1 (10%)
