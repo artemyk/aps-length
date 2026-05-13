@@ -840,7 +840,14 @@ def process(tex_file, opts):
                 continue
 
         if l.strip() == r'\appendix' and not opts.appendix:
-            print("*** Ending text, appendix encountered ***")
+            print("*** Ending text, appendix encountered *** (line: '%s')" %
+                  l.strip())
+            tex_lines.append('\\end{document}\n')
+            break
+
+        if r'\bibliography ' in l or r'\bibliography{' in l:
+            print("*** Ending text, bibliography encountered *** (line: '%s')" %
+                  l.strip())
             tex_lines.append('\\end{document}\n')
             break
 
