@@ -279,6 +279,21 @@ class ApsLengthTests(unittest.TestCase):
         self.assertEqual(words, 0)
         self.assertIn('outside figure environment', output.getvalue())
 
+    def test_cleanup_temp_outputs_removes_revtex_notes_bib(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pushd(tmpdir):
+                pathlib.Path('aps_length_tmp_test.aux').touch()
+                pathlib.Path('aps_length_tmp_testNotes.bib').touch()
+                pathlib.Path('aps_length_tmp_test_otherNotes.bib').touch()
+
+                self.mod._cleanup_temp_outputs('aps_length_tmp_test')
+
+                self.assertFalse(pathlib.Path('aps_length_tmp_test.aux').exists())
+                self.assertFalse(
+                    pathlib.Path('aps_length_tmp_testNotes.bib').exists())
+                self.assertTrue(
+                    pathlib.Path('aps_length_tmp_test_otherNotes.bib').exists())
+
     def test_wordcount_temp_files_are_cleaned_after_latex_failure(self):
         opts = type('Opts', (), {
             'latex': 'pdflatex',

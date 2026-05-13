@@ -352,8 +352,9 @@ def _make_temp_tex_file(prefix, contents):
 
 def _cleanup_temp_outputs(*bases):
     for base in bases:
-        for filename in glob.glob(base + '.*'):
-            os.unlink(filename)
+        for pattern in (base + '.*', base + 'Notes.bib'):
+            for filename in glob.glob(pattern):
+                os.unlink(filename)
 
 
 def _format_cmd(cmd):
