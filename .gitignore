@@ -1,1 +1,9 @@
 tmp_tex_file*
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+*.py[cod]
+*.egg-info/
+build/
+dist/
